@@ -1,0 +1,10 @@
+{
+  "name": "byteforce-accounting",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ByteForce Accounting — static app with a Netlify Function for cloud storage",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}

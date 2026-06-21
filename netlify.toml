@@ -1,0 +1,16 @@
+# ByteForce Accounting — Netlify config
+# Static front-end (index.html) + a Netlify Function for cloud storage.
+
+[build]
+  publish = "."
+  command = ""          # no front-end build step; Netlify still installs function deps
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Always revalidate the app shell so updates show up immediately.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
