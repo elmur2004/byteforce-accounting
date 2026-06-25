@@ -137,10 +137,10 @@ input:focus,select:focus{border-color:var(--orange)!important;}
 <script>
 // ============================================================
 // CLOUD persistence layer.
-// Data is stored in Netlify Blobs (the cloud) via the /api/data
-// Netlify Function — NOT on this device. So your data follows you
+// Data is stored in the cloud (Cloudflare KV) via the /api/data
+// Pages Function — NOT on this device. So your data follows you
 // across browsers, incognito windows, and devices.
-// Access is protected by a password you set in Netlify (APP_PASSWORD).
+// Access is protected by a password you set in Cloudflare (APP_PASSWORD).
 // The whole app data is kept as one JSON document in the cloud.
 // ============================================================
 (function () {
@@ -169,7 +169,7 @@ input:focus,select:focus{border-color:var(--orange)!important;}
     var res;
     try { res = await call(method, valueStr); } catch (e) { throw fail("network"); }
     if (res.status === 401) {
-      var entered = window.prompt("Enter your app password (the APP_PASSWORD you set in Netlify):");
+      var entered = window.prompt("Enter your app password (the APP_PASSWORD you set in Cloudflare):");
       if (entered == null) throw fail("auth");
       appKey = entered;
       try { localStorage.setItem(KEY_STORE, appKey); } catch (e) {}
@@ -446,7 +446,7 @@ const AR = {
   "Finish setup": "أكمل الإعداد",
   "Password needed": "كلمة المرور مطلوبة",
   "Can't reach the cloud": "تعذّر الوصول إلى السحابة",
-  "Set APP_PASSWORD in your Netlify site settings, then redeploy. See the README.": "اضبط APP_PASSWORD في إعدادات موقعك على Netlify ثم أعد النشر. راجع ملف README.",
+  "Set APP_PASSWORD in your Cloudflare Pages settings, then redeploy. See the README.": "اضبط APP_PASSWORD في إعدادات Cloudflare Pages ثم أعد النشر. راجع ملف README.",
   "The password was wrong or cancelled. Reload and enter it again.": "كلمة المرور خاطئة أو أُلغيت. أعد التحميل وأدخلها مرة أخرى.",
   "Check your internet connection, then try again.": "تحقّق من اتصالك بالإنترنت ثم حاول مرة أخرى.",
   "Try again": "حاول مرة أخرى",
@@ -1962,7 +1962,7 @@ function App() {
   if (loadError) {
     const title = loadError === "config" ? t("Finish setup") : loadError === "auth" ? t("Password needed") : t("Can't reach the cloud");
     const msg = loadError === "config"
-      ? t("Set APP_PASSWORD in your Netlify site settings, then redeploy. See the README.")
+      ? t("Set APP_PASSWORD in your Cloudflare Pages settings, then redeploy. See the README.")
       : loadError === "auth"
       ? t("The password was wrong or cancelled. Reload and enter it again.")
       : t("Check your internet connection, then try again.");
