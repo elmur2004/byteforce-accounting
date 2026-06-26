@@ -330,15 +330,27 @@ const ym = e => (e || "").slice(0, 7);
 // ---------- data model ----------
 const EMPTY = { roster: [], expenses: [], income: [], treasury: [], loans: [], mediaLedger: [], openingBalance: 0, targets: [], payrollPaid: {} };
 
-// Bring older data forward without changing any totals:
+// Bring older data forward without changing any totals, and coerce every field
+// to its expected shape so a hand-edited / malformed import can never crash the app:
+//  • each collection is forced to an array (a stray object/string/null can't break .find/.filter)
 //  • expenses that predate the approval feature are treated as already Paid
 //  • roster members with no start month start counting this month (forward-only)
-const migrate = d => ({
-  ...EMPTY, ...d,
-  payrollPaid: d.payrollPaid || {},
-  expenses: (d.expenses || []).map(e => ("paid" in e ? e : { ...e, paid: true, paidDate: e.paidDate || null })),
-  roster: (d.roster || []).map(r => (r.since ? r : { ...r, since: thisMonth() })),
-});
+const arr = v => Array.isArray(v) ? v : [];
+const migrate = d => {
+  d = (d && typeof d === "object") ? d : {};
+  return {
+    ...EMPTY, ...d,
+    openingBalance: +d.openingBalance || 0,
+    payrollPaid: (d.payrollPaid && typeof d.payrollPaid === "object") ? d.payrollPaid : {},
+    income: arr(d.income),
+    treasury: arr(d.treasury),
+    loans: arr(d.loans),
+    mediaLedger: arr(d.mediaLedger),
+    targets: arr(d.targets),
+    expenses: arr(d.expenses).map(e => ("paid" in e ? e : { ...e, paid: true, paidDate: e.paidDate || null })),
+    roster: arr(d.roster).map(r => (r.since ? r : { ...r, since: thisMonth() })),
+  };
+};
 const KEY = "byteforce-accounting-v3";
 
 function useStore() {
@@ -493,6 +505,9 @@ const AR = {
   "ByteForce — By Telling Force": "ByteForce — بقوة الكلمة",
   "B-Systems — Complete Your Process": "B-Systems — أكمِل عمليتك",
   "Switch company": "تبديل الشركة",
+  "Something went wrong": "حدث خطأ ما",
+  "The app hit an unexpected error. Reload to try again, or import a clean backup.": "واجه التطبيق خطأً غير متوقع. أعد التحميل للمحاولة مرة أخرى، أو استورد نسخة احتياطية سليمة.",
+  "Reload": "إعادة التحميل",
   "Loading…": "جارٍ التحميل…",
   "Data ▾": "البيانات ▾",
   "Export to Excel": "تصدير إلى Excel",
@@ -802,7 +817,10 @@ function Btn({ children, onClick, variant = "primary", small, style, title, full
     solid:{ background:C.ink, color:C.white },
   }[variant];
   const hov = { primary:C.orange600, violet:C.violet700, solid:"#000" };
-  const kids = typeof children === "string" ? tr(children) : children;
+  // translate string labels; keep a leading "+ " symbol out of the dictionary key
+  const kids = typeof children === "string"
+    ? (() => { const m = children.match(/^(\+\s+)([\s\S]+)$/); return m ? m[1] + tr(m[2]) : tr(children); })()
+    : children;
   return (
     <button className="btn" onClick={onClick} title={typeof title === "string" ? tr(title) : title}
       style={{ padding: small ? "8px 13px" : "11px 18px", fontSize: small ? 13 : 14, borderRadius:4, width: full ? "100%" : undefined, justifyContent: full ? "center" : undefined, ...v, ...style }}
@@ -2147,7 +2165,31 @@ function BrandPicker() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(TENANT && BRANDS[TENANT] ? <App /> : <BrandPicker />);
+/* ============================================================ ERROR BOUNDARY ============================================================ */
+class ErrorBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error("App error:", err, info); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div style={{ fontFamily:FONT, minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:C.paper }}>
+        <div style={{ maxWidth:460, width:"100%", background:C.white, border:`1px solid ${C.ink10}`, borderRadius:8, padding:"30px 26px", textAlign:"center", boxShadow:"var(--sh-md)" }}>
+          <div className="disp" style={{ fontSize:19, marginBottom:10 }}>{tr("Something went wrong")}</div>
+          <div style={{ fontSize:14, color:C.ink60, marginBottom:18, lineHeight:1.5 }}>{tr("The app hit an unexpected error. Reload to try again, or import a clean backup.")}</div>
+          <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+            <Btn onClick={() => location.reload()}>{tr("Reload")}</Btn>
+            <Btn variant="ghost" onClick={() => { try { localStorage.removeItem("bf-tenant"); } catch (e) {} location.reload(); }}>{tr("Switch company")}</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <ErrorBoundary>{TENANT && BRANDS[TENANT] ? <App /> : <BrandPicker />}</ErrorBoundary>
+);
 
 </script>
 </body>
