@@ -245,7 +245,7 @@ const BRANDS = {
   bsystems: {
     id: "bsystems", name: "B-Systems", title: "B-Systems Accounting",
     tagline: "B-Systems — Complete Your Process",
-    blurb: "Complete your process",
+    blurb: "Complete your process", icon: "bsystems-logo.png",
     display: "'Raleway',-apple-system,'Segoe UI',Arial,sans-serif",
     sans: "'Inter','Helvetica Neue',Arial,sans-serif",
     // signature gradient: Indigo Deep → Systems Indigo → mid → Signal Pink (135°)
@@ -274,6 +274,11 @@ const ACTIVE_BRAND = BRANDS[TENANT] || BRANDS.byteforce;
     root.style.setProperty("--sans", b.sans);
     root.setAttribute("data-brand", b.id);
     document.title = b.title;
+    if (b.icon) {
+      let link = document.querySelector('link[rel="icon"]');
+      if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+      link.href = b.icon;
+    }
   } catch (e) {}
 })(ACTIVE_BRAND);
 const C = ACTIVE_BRAND.C;
@@ -1978,9 +1983,9 @@ function Sidebar({ tab, setTab, open, onClose }) {
       <div style={{ padding:"22px 22px 18px", position:"relative" }}>
         {ACTIVE_BRAND.id === "bsystems" ? (
           <div style={{ display:"flex", alignItems:"center", gap:11 }}>
-            <svg width="29" height="33" viewBox="0 0 64 72" aria-hidden="true">
-              <path d="M47 21 C47 14 39 11 31.5 11 C22 11 16 16 16 24 C16 33 26 35 33.5 36 C42 37 48 40 48 47.5 C48 56 39.5 61 31 61 C22.5 61 17 57 17 50" fill="none" stroke="#fff" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <span style={{ width:40, height:40, borderRadius:10, background:"#fff", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 3px 10px rgba(0,0,0,.22)", flexShrink:0 }}>
+              <img src="bsystems-logo.png" alt="B-Systems" style={{ height:26, display:"block" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+            </span>
             <div style={{ fontFamily:"'Raleway',sans-serif", fontWeight:800, fontSize:21, color:"#fff", letterSpacing:"-.02em", lineHeight:1 }}>B-Systems</div>
           </div>
         ) : (
@@ -2002,6 +2007,14 @@ function Sidebar({ tab, setTab, open, onClose }) {
           );
         })}
       </nav>
+      <div style={{ padding:"0 12px 10px", position:"relative" }}>
+        <button onClick={() => { try { localStorage.removeItem("bf-tenant"); } catch (e) {} location.reload(); }}
+          style={{ width:"100%", display:"flex", alignItems:"center", gap:8, justifyContent:"center", background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.18)", color:"rgba(255,255,255,.9)", borderRadius:6, padding:"9px 12px", cursor:"pointer", fontFamily:FONT, fontSize:12.5, fontWeight:600 }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,.16)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,.08)"; }}>
+          ⇄ {t("Switch company")}
+        </button>
+      </div>
       <div style={{ padding:"14px 22px", borderTop:"1px solid rgba(255,255,255,.14)", fontSize:9.5, letterSpacing:".18em", textTransform:"uppercase", color:"rgba(255,255,255,.45)", fontWeight:700, position:"relative" }}>{t(ACTIVE_BRAND.tagline)}</div>
     </aside>
   );
