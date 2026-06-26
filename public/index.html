@@ -245,7 +245,7 @@ const BRANDS = {
   bsystems: {
     id: "bsystems", name: "B-Systems", title: "B-Systems Accounting",
     tagline: "B-Systems — Complete Your Process",
-    blurb: "Complete your process", icon: "bsystems-logo.png",
+    blurb: "Complete your process", icon: "bsystems-logo.png", media: false,
     display: "'Raleway',-apple-system,'Segoe UI',Arial,sans-serif",
     sans: "'Inter','Helvetica Neue',Arial,sans-serif",
     // signature gradient: Indigo Deep → Systems Indigo → mid → Signal Pink (135°)
@@ -292,7 +292,7 @@ const DEPTS = [
   { id: "web", label: "Web & App Development", color: C.amber },
   { id: "media_fee", label: "Media Buying — Fee", color: C.green },
   { id: "other", label: "Other", color: C.ink60 },
-];
+].filter(d => ACTIVE_BRAND.media !== false || d.id !== "media_fee");
 const DEPT_MAP = Object.fromEntries(DEPTS.map(d => [d.id, d]));
 
 const EXPENSE_TYPES = [
@@ -305,7 +305,7 @@ const EXPENSE_TYPES = [
   { id: "admin", label: "Admin / Office" },
   { id: "loan_repay", label: "Loan Repayment" },
   { id: "other", label: "Other" },
-];
+].filter(e => ACTIVE_BRAND.media !== false || e.id !== "media");
 const EXP_MAP = Object.fromEntries(EXPENSE_TYPES.map(e => [e.id, e.label]));
 
 const INCOME_TYPES = [
@@ -314,7 +314,7 @@ const INCOME_TYPES = [
   { id: "consulting", label: "Consulting" },
   { id: "loan_in", label: "Loan Received (borrowed)" },
   { id: "other", label: "Other Income" },
-];
+].filter(i => ACTIVE_BRAND.media !== false || i.id !== "media_fee");
 const INCOME_MAP = Object.fromEntries(INCOME_TYPES.map(i => [i.id, i.label]));
 
 // ---------- formatting + date helpers ----------
@@ -1971,7 +1971,7 @@ const NAV = [
   { id:"pnl", label:"Monthly P&L", icon:"M3 3v18h18M7 14l4-4 3 3 5-6" },
   { id:"departments", label:"Departments", icon:"M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" },
   { id:"targets", label:"Targets", icon:"M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12ZM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" },
-];
+].filter(n => ACTIVE_BRAND.media !== false || n.id !== "media");
 
 function NavIcon({ d }) {
   return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>;
@@ -2126,7 +2126,7 @@ function App() {
             {tab === "expenses" && <Expenses data={data} setData={setData} month={month} />}
             {tab === "clients" && <Clients data={data} />}
             {tab === "roster" && <Roster data={data} setData={setData} />}
-            {tab === "media" && <Media data={data} setData={setData} month={month} />}
+            {tab === "media" && ACTIVE_BRAND.media !== false && <Media data={data} setData={setData} month={month} />}
             {tab === "loans" && <Loans data={data} setData={setData} month={month} />}
             {tab === "treasury" && <Treasury data={data} setData={setData} month={month} />}
             {tab === "pnl" && <PnL data={data} month={month} />}
