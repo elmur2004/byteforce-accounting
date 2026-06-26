@@ -5,6 +5,14 @@ English + Arabic. Data is stored **in the cloud (Cloudflare KV)**, not on your
 device, so it follows you across browsers, incognito windows, and devices.
 Access is protected by a password only you know.
 
+## Two companies (multi-tenant)
+
+On first load you pick a company — **ByteForce** or **B-Systems** — each with its
+own branding and its **own separate data**. Switch anytime via **Data ▾ → Switch
+company**. The same `APP_PASSWORD` and the same `BYTEFORCE_KV` namespace serve
+both; each company's data is stored under its own key (`appdata:byteforce`,
+`appdata:bsystems`) automatically — no extra setup.
+
 ## What's in this folder
 
 ```

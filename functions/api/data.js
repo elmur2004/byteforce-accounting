@@ -6,10 +6,13 @@
 //   GET  /api/data  -> { value: "<json string>" | null }
 //   POST /api/data  with { value: "<json string>" } -> { ok: true }
 
-const DOC_KEY = "appdata";
-
 export async function onRequest(context) {
   const { request, env } = context;
+
+  // Per-company (multi-tenant) storage key. The app sends x-tenant
+  // (byteforce | bsystems); each company's data lives under its own key.
+  const tenant = (request.headers.get("x-tenant") || "byteforce").replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "byteforce";
+  const DOC_KEY = "appdata:" + tenant;
 
   // --- auth (fail CLOSED) ---
   const expected = env.APP_PASSWORD;
