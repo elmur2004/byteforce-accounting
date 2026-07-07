@@ -160,8 +160,9 @@ input:focus,select:focus{border-color:var(--orange)!important;}
   // and never overwrites good cloud data after a failed load.
   function fail(kind) { var e = new Error(kind); e.kind = kind; return e; }
 
-  function call(method, valueStr) {
-    var tenant; try { tenant = localStorage.getItem("bf-tenant") || "byteforce"; } catch (e) { tenant = "byteforce"; }
+  function call(method, valueStr, tenantOverride) {
+    var tenant = tenantOverride;
+    if (!tenant) { try { tenant = localStorage.getItem("bf-tenant") || "byteforce"; } catch (e) { tenant = "byteforce"; } }
     var opts = { method: method, headers: { "x-app-key": appKey, "x-tenant": tenant } };
     if (method === "POST") {
       opts.headers["content-type"] = "application/json";
@@ -171,15 +172,15 @@ input:focus,select:focus{border-color:var(--orange)!important;}
   }
 
   // Run a request; if the server rejects the password (401), ask for it and retry once.
-  async function authed(method, valueStr) {
+  async function authed(method, valueStr, tenant) {
     var res;
-    try { res = await call(method, valueStr); } catch (e) { throw fail("network"); }
+    try { res = await call(method, valueStr, tenant); } catch (e) { throw fail("network"); }
     if (res.status === 401) {
       var entered = window.prompt("Enter your app password (the APP_PASSWORD you set in Cloudflare):");
       if (entered == null) throw fail("auth");
       appKey = entered;
       try { localStorage.setItem(KEY_STORE, appKey); } catch (e) {}
-      try { res = await call(method, valueStr); } catch (e) { throw fail("network"); }
+      try { res = await call(method, valueStr, tenant); } catch (e) { throw fail("network"); }
       if (res.status === 401) {
         try { localStorage.removeItem(KEY_STORE); } catch (e) {}
         throw fail("auth");
@@ -200,6 +201,14 @@ input:focus,select:focus{border-color:var(--orange)!important;}
       var res = await authed("POST", v);
       if (res.status === 503) throw fail("config");
       if (!res.ok) throw fail("server");
+    },
+    // read another company's data (same password) — used by "Export all companies"
+    getForTenant: async function (tenant) {
+      var res = await authed("GET", null, tenant);
+      if (res.status === 503) throw fail("config");
+      if (!res.ok) throw fail("server");
+      var j = await res.json();
+      return { value: (j && j.value != null) ? j.value : null };
     },
   };
 })();
@@ -353,41 +362,79 @@ const migrate = d => {
 };
 const KEY = "byteforce-accounting-v3";
 
+// Per-device durable backup of the last saved data (a safety net, NOT the source
+// of truth — the cloud is). Keyed per company. Lets us detect + recover from
+// Cloudflare KV's eventual consistency (a read right after a write can be stale).
+const BACKUP_KEY = "bf-backup-" + (TENANT || "byteforce");
+const readBackup = () => { try { const s = localStorage.getItem(BACKUP_KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+const writeBackup = doc => { try { localStorage.setItem(BACKUP_KEY, JSON.stringify(doc)); } catch (e) {} };
+
 function useStore() {
   const [data, setData] = useState(EMPTY);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(null); // null | "network" | "auth" | "config" | "server"
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
-  const lastPayload = useRef(null);
+  const latest = useRef(null);    // newest payload waiting to be written (coalesced)
+  const inFlight = useRef(false);  // is a write in progress?
+  const revRef = useRef(0);        // monotonic revision of the data we currently hold
 
-  // Load from the cloud. On ANY failure we record loadError and do NOT pretend
-  // the cloud is empty — that prevents a transient read failure from later
-  // overwriting real cloud data with a blank document.
+  // ONE write at a time, and always the LATEST state. Rapid edits coalesce into
+  // the fewest writes, and no out-of-order POST can ever overwrite newer data.
+  const flush = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      while (latest.current != null) {
+        const payload = latest.current; latest.current = null;
+        setSaving(true);
+        try { await window.storage.set(KEY, payload); setSaveError(false); }
+        catch (e) { if (latest.current == null) latest.current = payload; setSaveError(true); break; } // keep for Retry
+      }
+    } finally { inFlight.current = false; setSaving(false); }
+  }, []);
+
   const load = useCallback(async () => {
     setLoaded(false); setLoadError(null);
     try {
       const r = await window.storage.get(KEY);
-      setData(migrate(r && r.value ? JSON.parse(r.value) : {}));
+      const cloud = r && r.value ? migrate(JSON.parse(r.value)) : null;
+      const b0 = readBackup();
+      const backup = b0 ? migrate(b0) : null;
+      const cloudRev = (cloud && +cloud._rev) || 0;
+      const backupRev = (backup && +backup._rev) || 0;
+      if (backup && backupRev > cloudRev) {
+        // The cloud read is BEHIND what this device last saved — a stale read
+        // (KV is eventually consistent). Trust the newer local copy and re-write
+        // it to the cloud so nothing is lost.
+        revRef.current = backupRev;
+        setData(backup); writeBackup(backup);
+        latest.current = JSON.stringify(backup); flush();
+      } else {
+        const chosen = cloud || backup || { ...EMPTY };
+        revRef.current = Math.max(cloudRev, backupRev);
+        setData(chosen); writeBackup(chosen);
+      }
     } catch (e) {
-      setLoadError(e && e.kind ? e.kind : "network");
+      const kind = e && e.kind ? e.kind : "network";
+      const b = readBackup();
+      // A transient network/server failure shouldn't block or lose data — fall
+      // back to the local backup. Auth/config errors must show their setup screen.
+      if ((kind === "network" || kind === "server") && b) { const doc = migrate(b); setData(doc); revRef.current = (+doc._rev) || 0; setLoadError(null); }
+      else setLoadError(kind);
     } finally { setLoaded(true); }
-  }, []);
+  }, [flush]);
   useEffect(() => { load(); }, [load]);
 
-  const persist = useCallback(async payload => {
-    setSaving(true);
-    try { await window.storage.set(KEY, payload); setSaveError(false); }
-    catch (e) { setSaveError(true); }   // surfaced as a persistent banner in <App>
-    finally { setSaving(false); }
-  }, []);
-  const save = useCallback(async next => {
-    setData(next);                       // optimistic UI
-    const payload = JSON.stringify(next);
-    lastPayload.current = payload;
-    await persist(payload);
-  }, [persist]);
-  const retrySave = useCallback(() => { if (lastPayload.current != null) persist(lastPayload.current); }, [persist]);
+  const save = useCallback(next => {
+    revRef.current += 1;
+    const withRev = { ...next, _rev: revRef.current };
+    setData(withRev);              // optimistic UI
+    writeBackup(withRev);          // durable local safety copy FIRST (never lose it)
+    latest.current = JSON.stringify(withRev); // newest wins in the queue
+    flush();
+  }, [flush]);
+  const retrySave = useCallback(() => { flush(); }, [flush]);
 
   return { data, setData: save, loaded, loadError, reload: load, saving, saveError, retrySave };
 }
@@ -481,6 +528,15 @@ const treasuryThrough = (data, upto) => {
   return bal;
 };
 
+// the latest month with any activity (or the current month) — the "now" edge
+const liveMonth = data => {
+  const ms = activeMonths(data, "9999-99");
+  const last = ms.length ? ms[ms.length - 1] : thisMonth();
+  return last > thisMonth() ? last : thisMonth();
+};
+// treasury balance RIGHT NOW — independent of which month you're viewing
+const liveTreasury = data => treasuryThrough(data, liveMonth(data));
+
 
 /* ============================================================
    i18n — Arabic / English
@@ -514,6 +570,12 @@ const AR = {
   "Import from Excel": "استيراد من Excel",
   "Export backup (JSON)": "تصدير نسخة احتياطية (JSON)",
   "Import backup": "استيراد نسخة احتياطية",
+  "Both companies": "كلتا الشركتين",
+  "Export ALL companies (Excel)": "تصدير كل الشركات (Excel)",
+  "Export ALL companies (JSON)": "تصدير كل الشركات (JSON)",
+  "now": "الآن",
+  "Balance now": "الرصيد الآن",
+  "Cash on hand right now — any month": "النقد المتاح الآن — بأي شهر",
   "Reset everything": "مسح كل البيانات",
   "Erase all data? Export a backup first.": "مسح كل البيانات؟ صدّر نسخة احتياطية أولًا.",
   "Could not read that file.": "تعذّر قراءة هذا الملف.",
@@ -1138,7 +1200,7 @@ function Dashboard({ data, month, go }) {
   const inc = incomeIn(data, month), exp = expenseIn(data, month), ap = pendingExpenseIn(data, month), apAll = apTotal(data), net = inc - exp;
   const ar = data.income.filter(i => !i.collected).reduce((s, i) => s + +i.amount, 0);
   const salary = data.roster.filter(r => r.active !== false).reduce((s, r) => s + +r.salary, 0);
-  const treasury = treasuryThrough(data, month);
+  const treasury = liveTreasury(data); // always the balance RIGHT NOW, not through the viewed month
   const target = data.targets.find(t => t.period === month);
   const { owe, owed } = loanTotals(data);
   const cl = clientTotals(data);
@@ -1153,7 +1215,7 @@ function Dashboard({ data, month, go }) {
       <div style={{ position:"relative", overflow:"hidden", borderRadius:6, background:"var(--grad)", color:C.white, padding:"30px 32px", marginBottom:20, boxShadow:"var(--sh-md)" }}>
         <svg viewBox="0 0 300 360" width="200" style={{ position:"absolute", insetInlineEnd:-30, top:-30, opacity:.16 }} aria-hidden="true"><g fill="#fff"><rect x="0" y="0" width="42" height="256"/><rect x="0" y="214" width="300" height="42"/><polygon points="170,256 274,256 170,358"/></g></svg>
         <div style={{ position:"relative" }}>
-          <div className="eyebrow" style={{ color:"rgba(255,255,255,.85)" }}>{tr("Treasury balance")}</div>
+          <div className="eyebrow" style={{ color:"rgba(255,255,255,.85)" }}>{tr("Treasury balance")} · {tr("now")}</div>
           <div className="disp" style={{ fontSize:"clamp(36px,6vw,60px)", margin:"8px 0 4px" }}>{money(animTre)}</div>
           <div style={{ fontSize:13, opacity:.9 }}>{tr("Cash on hand, carried forward")} · {tr("Month net profit")} <b>{net >= 0 ? "+" : "−"}{money(Math.abs(animNet))}</b></div>
         </div>
@@ -1628,6 +1690,9 @@ function Treasury({ data, setData, month }) {
       <Head eyebrow={`Cash box · ${monthLabel(month)}`} title="Treasury" sub="Each month carries forward: last month's closing balance + this month's net profit + deposits (loans, owner injections, held media budget) − withdrawals.">
         <Btn onClick={() => setMoving(true)}>+ Deposit / withdraw</Btn>
       </Head>
+      <Grid min={200} style={{ marginBottom:16 }}>
+        <Stat label="Balance now" value={liveTreasury(data)} color={liveTreasury(data) >= 0 ? C.teal : C.red} accent={C.teal} sub="Cash on hand right now — any month" />
+      </Grid>
       <Card style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
           <span style={{ color:C.ink80 }}>{tr("Opening balance")} ({monthLabel(addMonths(month, -1))})</span><b style={{ fontVariantNumeric:"tabular-nums" }}>{money(opening)}</b>
@@ -1925,7 +1990,28 @@ const parseWorkbook = wb => {
 
 function DataMenu({ data, setData }) {
   const [open, setOpen] = useState(false);
-  const exportJson = () => { const blob = new Blob([JSON.stringify(data, null, 2)], { type:"application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `byteforce-accounting-${today()}.json`; a.click(); setOpen(false); };
+  const stripRev = d => { const c = { ...d }; delete c._rev; return c; };
+  const OTHER = TENANT === "bsystems" ? "byteforce" : "bsystems";
+  const fetchTenant = async t => { try { const r = await window.storage.getForTenant(t); return migrate(r && r.value ? JSON.parse(r.value) : {}); } catch (e) { return migrate({}); } };
+  const dl = (blob, name) => { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); };
+  const exportJson = () => { dl(new Blob([JSON.stringify(stripRev(data), null, 2)], { type:"application/json" }), `${TENANT}-accounting-${today()}.json`); setOpen(false); };
+  const exportAllJson = async () => {
+    const both = {}; both[TENANT] = stripRev(data); both[OTHER] = stripRev(await fetchTenant(OTHER));
+    dl(new Blob([JSON.stringify(both, null, 2)], { type:"application/json" }), `all-companies-${today()}.json`); setOpen(false);
+  };
+  const exportAllXlsx = async () => {
+    if (!window.XLSX) return alert(tr("Excel support could not be loaded. Check your connection and reload the page."));
+    try {
+      const both = {}; both[TENANT] = data; both[OTHER] = await fetchTenant(OTHER);
+      const wb = XLSX.utils.book_new();
+      ["byteforce", "bsystems"].forEach(tn => {
+        const d = both[tn] || migrate({}), label = BRANDS[tn].name;
+        XLSX_SHEETS.forEach(([name, key]) => XLSX.utils.book_append_sheet(wb, rowsToSheet(d[key]), (label + " " + name).slice(0, 31)));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ key:"openingBalance", value:+d.openingBalance || 0 }, { key:"payrollPaid", value: JSON.stringify(d.payrollPaid || {}) }]), (label + " Meta").slice(0, 31));
+      });
+      XLSX.writeFile(wb, `all-companies-${today()}.xlsx`); setOpen(false);
+    } catch (err) { console.error(err); alert(tr("Could not export the Excel file.")); }
+  };
   const importJson = e => { const file = e.target.files[0]; if (!file) return; const r = new FileReader(); r.onload = () => { try { const next = migrate(JSON.parse(r.result)); if (!confirm(tr("Importing replaces all current data. Export a backup first. Continue?"))) return; setData(next); setOpen(false); } catch { alert(tr("Could not read that file.")); } }; r.readAsText(file); e.target.value = ""; };
   const exportXlsx = () => {
     if (!window.XLSX) return alert(tr("Excel support could not be loaded. Check your connection and reload the page."));
@@ -1949,6 +2035,9 @@ function DataMenu({ data, setData }) {
           <label style={{ ...menuItem, display:"block" }}>{tr("Import from Excel")}<input type="file" accept=".xlsx,.xls" onChange={importXlsx} style={{ display:"none" }} /></label>
           <button onClick={exportJson} style={menuItem}>{tr("Export backup (JSON)")}</button>
           <label style={{ ...menuItem, display:"block" }}>{tr("Import backup")}<input type="file" accept="application/json" onChange={importJson} style={{ display:"none" }} /></label>
+          <div style={{ borderTop:`1px solid ${C.ink10}`, padding:"7px 16px 3px", fontSize:10, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:C.ink30 }}>{tr("Both companies")}</div>
+          <button onClick={exportAllXlsx} style={menuItem}>{tr("Export ALL companies (Excel)")}</button>
+          <button onClick={exportAllJson} style={menuItem}>{tr("Export ALL companies (JSON)")}</button>
           <button onClick={() => { try { localStorage.removeItem("bf-tenant"); } catch (e) {} location.reload(); }} style={menuItem}>{tr("Switch company")}</button>
           <button onClick={() => { if (confirm(tr("Erase all data? Export a backup first."))) { setData(EMPTY); setOpen(false); } }} style={{ ...menuItem, color:C.red }}>{tr("Reset everything")}</button>
         </div>
