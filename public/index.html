@@ -600,6 +600,10 @@ const AR = {
   "Paid": "مدفوع",
   "On hold": "قيد الانتظار",
   "from roster": "من كشف الرواتب",
+  "Payroll": "الرواتب",
+  "Other expenses": "مصروفات أخرى",
+  "No payroll this month.": "لا رواتب هذا الشهر.",
+  "No other expenses this month.": "لا مصروفات أخرى هذا الشهر.",
   "Approve / mark paid": "اعتماد / تعليم كمدفوع",
   "Mark on hold": "إعادة إلى الانتظار",
   "Expenses paid": "المصروفات المدفوعة",
@@ -1348,7 +1352,36 @@ function Expenses({ data, setData, month }) {
     }
   };
   const rows = monthExpenses(data, month);
+  const payrollRows = rows.filter(e => e.type === "payroll");
+  const otherRows = rows.filter(e => e.type !== "payroll");
   const paidT = paidExpenseIn(data, month), pendingT = pendingExpenseIn(data, month);
+  const sum = list => list.reduce((s, e) => s + expenseAmount(e), 0);
+
+  const renderRow = e => (
+    <tr key={e.id} className="row-hover" style={{ borderBottom:`1px solid ${C.ink10}` }}>
+      <Td color={C.ink60}>{tr(EXP_MAP[e.type] || e.type)}</Td>
+      <Td bold>{e.name || "—"}{e.auto && <span style={{ marginInlineStart:8, fontSize:10, fontWeight:700, color:C.violet700, background:C.violet100, padding:"2px 7px", borderRadius:999 }}>{tr("from roster")}</span>}</Td>
+      <Td>{e.serviceLine ? DeptTag(e.serviceLine) : <span style={{ color:C.ink30 }}>{tr("Overhead")}</span>}</Td>
+      <Td color={C.ink60}>{e.note ? tr(e.note) : "—"}</Td>
+      <Td right bold color={e.paid ? C.red : C.amber}>−{money(expenseAmount(e))}</Td>
+      <Td>{e.paid ? <Pill bg={C.green100} fg={C.green}>{tr("Paid")}</Pill> : <Pill bg={C.amber100} fg={C.amber}>{tr("On hold")}</Pill>}</Td>
+      <Td right>
+        <button onClick={() => togglePaid(e)} title={e.paid ? tr("Mark on hold") : tr("Approve / mark paid")} style={iconBtn(e.paid ? C.green : C.ink30)}>✓</button>
+        {!e.auto && <button onClick={() => setEditing(e)} title={tr("Edit")} style={iconBtn(C.ink60)}>✎</button>}
+        {!e.auto && <button onClick={() => remove(e.id)} title={tr("Delete")} style={iconBtn(C.red)}>🗑</button>}
+      </Td>
+    </tr>
+  );
+  const head = <><Th>Type</Th><Th>Name</Th><Th>Department</Th><Th>Note</Th><Th right>Amount</Th><Th>Status</Th><Th right>Actions</Th></>;
+  const section = (title, list, emptyText) => (
+    <Card style={{ padding:0, marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 18px" }}>
+        <span className="disp" style={{ fontSize:14 }}>{tr(title)}</span>
+        <span style={{ fontSize:13, color:C.ink60, fontVariantNumeric:"tabular-nums" }}>{money(sum(list))}</span>
+      </div>
+      {list.length === 0 ? <Empty text={emptyText} /> : <Table head={head}>{list.map(renderRow)}</Table>}
+    </Card>
+  );
 
   return (
     <div className="view">
@@ -1359,27 +1392,8 @@ function Expenses({ data, setData, month }) {
         <Stat label="Paid this month" value={paidT} color={C.red} accent={C.red} />
         <Stat label="On hold (to be paid)" value={pendingT} color={C.amber} accent={C.amber} />
       </Grid>
-      <Card style={{ padding:0 }}>
-        {rows.length === 0 ? <Empty text="No expenses this month." /> : (
-          <Table head={<><Th>Type</Th><Th>Name</Th><Th>Department</Th><Th>Note</Th><Th right>Amount</Th><Th>Status</Th><Th right>Actions</Th></>}>
-            {rows.map(e => (
-              <tr key={e.id} className="row-hover" style={{ borderBottom:`1px solid ${C.ink10}` }}>
-                <Td color={C.ink60}>{tr(EXP_MAP[e.type] || e.type)}</Td>
-                <Td bold>{e.name || "—"}{e.auto && <span style={{ marginInlineStart:8, fontSize:10, fontWeight:700, color:C.violet700, background:C.violet100, padding:"2px 7px", borderRadius:999 }}>{tr("from roster")}</span>}</Td>
-                <Td>{e.serviceLine ? DeptTag(e.serviceLine) : <span style={{ color:C.ink30 }}>{tr("Overhead")}</span>}</Td>
-                <Td color={C.ink60}>{e.note ? tr(e.note) : "—"}</Td>
-                <Td right bold color={e.paid ? C.red : C.amber}>−{money(expenseAmount(e))}</Td>
-                <Td>{e.paid ? <Pill bg={C.green100} fg={C.green}>{tr("Paid")}</Pill> : <Pill bg={C.amber100} fg={C.amber}>{tr("On hold")}</Pill>}</Td>
-                <Td right>
-                  <button onClick={() => togglePaid(e)} title={e.paid ? tr("Mark on hold") : tr("Approve / mark paid")} style={iconBtn(e.paid ? C.green : C.ink30)}>✓</button>
-                  {!e.auto && <button onClick={() => setEditing(e)} title={tr("Edit")} style={iconBtn(C.ink60)}>✎</button>}
-                  {!e.auto && <button onClick={() => remove(e.id)} title={tr("Delete")} style={iconBtn(C.red)}>🗑</button>}
-                </Td>
-              </tr>
-            ))}
-          </Table>
-        )}
-      </Card>
+      {section("Payroll", payrollRows, "No payroll this month.")}
+      {section("Other expenses", otherRows, "No other expenses this month.")}
       {(adding || editing) && <ExpenseForm month={month} initial={editing} onClose={() => { setAdding(false); setEditing(null); }}
         onSave={x => { editing ? update(editing.id, x) : add(x); setAdding(false); setEditing(null); }} />}
     </div>
