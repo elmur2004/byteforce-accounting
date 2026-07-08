@@ -377,7 +377,6 @@ function useStore() {
   const [saveError, setSaveError] = useState(false);
   const latest = useRef(null);    // newest payload waiting to be written (coalesced)
   const inFlight = useRef(false);  // is a write in progress?
-  const revRef = useRef(0);        // monotonic revision of the data we currently hold
 
   // ONE write at a time, and always the LATEST state. Rapid edits coalesce into
   // the fewest writes, and no out-of-order POST can ever overwrite newer data.
@@ -401,18 +400,18 @@ function useStore() {
       const cloud = r && r.value ? migrate(JSON.parse(r.value)) : null;
       const b0 = readBackup();
       const backup = b0 ? migrate(b0) : null;
-      const cloudRev = (cloud && +cloud._rev) || 0;
-      const backupRev = (backup && +backup._rev) || 0;
-      if (backup && backupRev > cloudRev) {
-        // The cloud read is BEHIND what this device last saved — a stale read
-        // (KV is eventually consistent). Trust the newer local copy and re-write
-        // it to the cloud so nothing is lost.
-        revRef.current = backupRev;
+      // Compare by wall-clock SAVE TIME (a shared clock), not a per-device
+      // counter — so a reload only restores from the local backup when THIS
+      // device saved more recently than the copy the cloud returned. This keeps
+      // the single-device stale-read recovery WITHOUT a stale backup overwriting
+      // a genuinely newer write from another device on a mere reload.
+      const cloudAt = (cloud && +cloud._savedAt) || 0;
+      const backupAt = (backup && +backup._savedAt) || 0;
+      if (backup && backupAt > cloudAt) {
         setData(backup); writeBackup(backup);
-        latest.current = JSON.stringify(backup); flush();
+        latest.current = JSON.stringify(backup); flush(); // re-push the newer local copy
       } else {
         const chosen = cloud || backup || { ...EMPTY };
-        revRef.current = Math.max(cloudRev, backupRev);
         setData(chosen); writeBackup(chosen);
       }
     } catch (e) {
@@ -420,18 +419,17 @@ function useStore() {
       const b = readBackup();
       // A transient network/server failure shouldn't block or lose data — fall
       // back to the local backup. Auth/config errors must show their setup screen.
-      if ((kind === "network" || kind === "server") && b) { const doc = migrate(b); setData(doc); revRef.current = (+doc._rev) || 0; setLoadError(null); }
+      if ((kind === "network" || kind === "server") && b) { setData(migrate(b)); setLoadError(null); }
       else setLoadError(kind);
     } finally { setLoaded(true); }
   }, [flush]);
   useEffect(() => { load(); }, [load]);
 
   const save = useCallback(next => {
-    revRef.current += 1;
-    const withRev = { ...next, _rev: revRef.current };
-    setData(withRev);              // optimistic UI
-    writeBackup(withRev);          // durable local safety copy FIRST (never lose it)
-    latest.current = JSON.stringify(withRev); // newest wins in the queue
+    const stamped = { ...next, _savedAt: Date.now() }; // wall-clock freshness marker
+    setData(stamped);              // optimistic UI
+    writeBackup(stamped);          // durable local safety copy FIRST (never lose it)
+    latest.current = JSON.stringify(stamped); // newest wins in the queue
     flush();
   }, [flush]);
   const retrySave = useCallback(() => { flush(); }, [flush]);
@@ -1990,7 +1988,7 @@ const parseWorkbook = wb => {
 
 function DataMenu({ data, setData }) {
   const [open, setOpen] = useState(false);
-  const stripRev = d => { const c = { ...d }; delete c._rev; return c; };
+  const stripRev = d => { const c = { ...d }; delete c._rev; delete c._savedAt; return c; };
   const OTHER = TENANT === "bsystems" ? "byteforce" : "bsystems";
   const fetchTenant = async t => { try { const r = await window.storage.getForTenant(t); return migrate(r && r.value ? JSON.parse(r.value) : {}); } catch (e) { return migrate({}); } };
   const dl = (blob, name) => { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); };
