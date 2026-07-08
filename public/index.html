@@ -600,6 +600,7 @@ const AR = {
   "Paid": "مدفوع",
   "On hold": "قيد الانتظار",
   "from roster": "من كشف الرواتب",
+  "Edit in roster": "تعديل في كشف الرواتب",
   "Payroll": "الرواتب",
   "Other expenses": "مصروفات أخرى",
   "No payroll this month.": "لا رواتب هذا الشهر.",
@@ -1338,6 +1339,7 @@ function IncomeForm({ month, initial, onClose, onSave }) {
 function Expenses({ data, setData, month }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [editingRoster, setEditingRoster] = useState(null); // edit a person's roster record from an auto-payroll row
   const add = x => setData({ ...data, expenses: [{ id: uid(), ...x }, ...data.expenses] });
   const update = (id, x) => setData({ ...data, expenses: data.expenses.map(e => e.id === id ? { ...e, ...x } : e) });
   const remove = id => setData({ ...data, expenses: data.expenses.filter(e => e.id !== id) });
@@ -1367,8 +1369,12 @@ function Expenses({ data, setData, month }) {
       <Td>{e.paid ? <Pill bg={C.green100} fg={C.green}>{tr("Paid")}</Pill> : <Pill bg={C.amber100} fg={C.amber}>{tr("On hold")}</Pill>}</Td>
       <Td right>
         <button onClick={() => togglePaid(e)} title={e.paid ? tr("Mark on hold") : tr("Approve / mark paid")} style={iconBtn(e.paid ? C.green : C.ink30)}>✓</button>
-        {!e.auto && <button onClick={() => setEditing(e)} title={tr("Edit")} style={iconBtn(C.ink60)}>✎</button>}
-        {!e.auto && <button onClick={() => remove(e.id)} title={tr("Delete")} style={iconBtn(C.red)}>🗑</button>}
+        {e.auto
+          ? <button onClick={() => { const m = (data.roster || []).find(r => r.id === e.rosterId); if (m) setEditingRoster(m); }} title={tr("Edit in roster")} style={iconBtn(C.ink60)}>✎</button>
+          : <>
+              <button onClick={() => setEditing(e)} title={tr("Edit")} style={iconBtn(C.ink60)}>✎</button>
+              <button onClick={() => remove(e.id)} title={tr("Delete")} style={iconBtn(C.red)}>🗑</button>
+            </>}
       </Td>
     </tr>
   );
@@ -1396,6 +1402,8 @@ function Expenses({ data, setData, month }) {
       {section("Other expenses", otherRows, "No other expenses this month.")}
       {(adding || editing) && <ExpenseForm month={month} initial={editing} onClose={() => { setAdding(false); setEditing(null); }}
         onSave={x => { editing ? update(editing.id, x) : add(x); setAdding(false); setEditing(null); }} />}
+      {editingRoster && <RosterForm initial={editingRoster} onClose={() => setEditingRoster(null)}
+        onSave={x => { setData({ ...data, roster: (data.roster || []).map(r => r.id === editingRoster.id ? { ...r, ...x } : r) }); setEditingRoster(null); }} />}
     </div>
   );
 }
