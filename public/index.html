@@ -357,7 +357,11 @@ const migrate = d => {
     mediaLedger: arr(d.mediaLedger),
     targets: arr(d.targets),
     expenses: arr(d.expenses).map(e => ("paid" in e ? e : { ...e, paid: true, paidDate: e.paidDate || null })),
-    roster: arr(d.roster).map(r => (r.since ? r : { ...r, since: thisMonth() })),
+    roster: arr(d.roster).map(r => {
+      const base = r.since ? r : { ...r, since: thisMonth() };
+      return (base.segments && base.segments.length) ? base
+        : { ...base, segments: [{ from: base.since, salary: +base.salary || 0, active: base.active !== false }] };
+    }),
   };
 };
 const KEY = "byteforce-accounting-v3";
@@ -458,17 +462,38 @@ const isPaid = e => !!e.paid;
 // where payroll was logged MANUALLY uses that manual entry instead, so nothing
 // is double-counted. Auto rows are "on hold" until approved (tracked per
 // person+month in data.payrollPaid).
+// ----- effective-dated roster (salary/active history) -----
+// A member carries `segments`: [{ from:"YYYY-MM", salary, active }] sorted by
+// month. A change made "as of" a month only affects that month onward — earlier
+// months keep their previous value, and a later change overrides from its month.
+const memberSegs = r => (r.segments && r.segments.length)
+  ? r.segments
+  : [{ from: r.since || thisMonth(), salary: +r.salary || 0, active: r.active !== false }];
+const memberAt = (r, m) => {
+  let cur = null;
+  memberSegs(r).slice().sort((a, b) => a.from < b.from ? -1 : 1).forEach(s => { if (s.from <= m) cur = s; });
+  return cur ? { salary: +cur.salary || 0, active: cur.active !== false } : { salary: 0, active: false };
+};
+const memberNow = r => memberAt(r, thisMonth()); // latest effective values (for the standing list)
+// upsert an effective-dated change at month m — leaves earlier months untouched
+const memberUpsert = (r, m, patch) => {
+  const at = memberAt(r, m);
+  const seg = { from: m, salary: patch.salary != null ? +patch.salary || 0 : at.salary, active: patch.active != null ? !!patch.active : at.active };
+  const segs = memberSegs(r).filter(s => s.from !== m).concat([seg]).sort((a, b) => a.from < b.from ? -1 : 1);
+  return { ...r, segments: segs };
+};
+
 const autoPayroll = (data, m) => {
   if ((data.expenses || []).some(e => e.type === "payroll" && e.month === m)) return [];
-  return (data.roster || [])
-    .filter(r => r.active !== false && (r.since || thisMonth()) <= m && +r.salary)
-    .map(r => {
-      const key = `${m}:${r.id}`;
-      const pd = data.payrollPaid && data.payrollPaid[key];
-      return { id: `pay:${key}`, auto: true, rosterId: r.id, type: "payroll", month: m,
-        name: r.name, serviceLine: r.serviceLine || "", amount: +r.salary, note: "Salary (from roster)",
-        paid: !!pd, paidDate: pd || null };
-    });
+  return (data.roster || []).map(r => {
+    const { salary, active } = memberAt(r, m);
+    if (!active || !(salary > 0)) return null;
+    const key = `${m}:${r.id}`;
+    const pd = data.payrollPaid && data.payrollPaid[key];
+    return { id: `pay:${key}`, auto: true, rosterId: r.id, type: "payroll", month: m,
+      name: r.name, serviceLine: r.serviceLine || "", amount: salary, note: "Salary (from roster)",
+      paid: !!pd, paidDate: pd || null };
+  }).filter(Boolean);
 };
 
 // all expense rows (manual + auto-payroll) for one month
@@ -479,8 +504,8 @@ const expenseMonths = data => {
   const cur = thisMonth(), set = new Set();
   (data.expenses || []).forEach(e => set.add(e.month));
   Object.keys(data.payrollPaid || {}).forEach(k => set.add(k.split(":")[0]));
-  (data.roster || []).filter(r => r.active !== false && +r.salary).forEach(r => {
-    let m = r.since || cur, guard = 0;
+  (data.roster || []).forEach(r => {
+    let m = memberSegs(r).map(s => s.from).sort()[0] || cur, guard = 0;
     while (m <= cur && guard++ < 600) { set.add(m); m = addMonths(m, 1); }
   });
   return [...set].filter(Boolean);
@@ -601,6 +626,11 @@ const AR = {
   "On hold": "قيد الانتظار",
   "from roster": "من كشف الرواتب",
   "Edit in roster": "تعديل في كشف الرواتب",
+  "Total": "الإجمالي",
+  "Toggle active (from this month)": "تفعيل/إيقاف (من هذا الشهر)",
+  "Effective from (month)": "يسري من (الشهر)",
+  "Applies from this month on — earlier months stay unchanged.": "يسري من هذا الشهر فصاعدًا — الأشهر السابقة تبقى كما هي.",
+  "Removed / on leave": "مُزال / في إجازة",
   "Payroll": "الرواتب",
   "Other expenses": "مصروفات أخرى",
   "No payroll this month.": "لا رواتب هذا الشهر.",
@@ -1202,7 +1232,8 @@ const CardTitle = ({ children }) =>
 function Dashboard({ data, month, go }) {
   const inc = incomeIn(data, month), exp = expenseIn(data, month), ap = pendingExpenseIn(data, month), apAll = apTotal(data), net = inc - exp;
   const ar = data.income.filter(i => !i.collected).reduce((s, i) => s + +i.amount, 0);
-  const salary = data.roster.filter(r => r.active !== false).reduce((s, r) => s + +r.salary, 0);
+  const activeNow = data.roster.filter(r => memberNow(r).active);
+  const salary = activeNow.reduce((s, r) => s + memberNow(r).salary, 0);
   const treasury = liveTreasury(data); // always the balance RIGHT NOW, not through the viewed month
   const target = data.targets.find(t => t.period === month);
   const { owe, owed } = loanTotals(data);
@@ -1234,7 +1265,7 @@ function Dashboard({ data, month, go }) {
       <Grid min={210}>
         <Stat label="Accounts receivable" value={ar} color={C.amber} accent={C.amber} sub="Uncollected across all months" />
         <Stat label="Accounts payable" value={apAll} color={apAll > 0 ? C.red : C.ink60} accent={C.red} sub="On hold across all months" />
-        <Stat label="Committed monthly salary" value={salary} color={C.amber} sub={`${data.roster.filter(r => r.active !== false).length} ${tr("active staff")}`} />
+        <Stat label="Committed monthly salary" value={salary} color={C.amber} sub={`${activeNow.length} ${tr("active staff")}`} />
         <Stat label="Clients owe you" value={cl.owed} color={cl.owed > 0 ? C.amber : C.ink60} />
       </Grid>
       <div style={{ height:16 }} />
@@ -1385,7 +1416,16 @@ function Expenses({ data, setData, month }) {
         <span className="disp" style={{ fontSize:14 }}>{tr(title)}</span>
         <span style={{ fontSize:13, color:C.ink60, fontVariantNumeric:"tabular-nums" }}>{money(sum(list))}</span>
       </div>
-      {list.length === 0 ? <Empty text={emptyText} /> : <Table head={head}>{list.map(renderRow)}</Table>}
+      {list.length === 0 ? <Empty text={emptyText} /> : (
+        <Table head={head}>
+          {list.map(renderRow)}
+          <tr style={{ borderTop:`2px solid ${C.ink10}`, background:C.ink05 }}>
+            <td colSpan={4} style={{ padding:"12px 14px", fontWeight:700, fontFamily:FONT }}>{tr("Total")}</td>
+            <td style={{ padding:"12px 14px", textAlign:"end", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>−{money(sum(list))}</td>
+            <td colSpan={2}></td>
+          </tr>
+        </Table>
+      )}
     </Card>
   );
 
@@ -1402,8 +1442,8 @@ function Expenses({ data, setData, month }) {
       {section("Other expenses", otherRows, "No other expenses this month.")}
       {(adding || editing) && <ExpenseForm month={month} initial={editing} onClose={() => { setAdding(false); setEditing(null); }}
         onSave={x => { editing ? update(editing.id, x) : add(x); setAdding(false); setEditing(null); }} />}
-      {editingRoster && <RosterForm initial={editingRoster} onClose={() => setEditingRoster(null)}
-        onSave={x => { setData({ ...data, roster: (data.roster || []).map(r => r.id === editingRoster.id ? { ...r, ...x } : r) }); setEditingRoster(null); }} />}
+      {editingRoster && <RosterForm initial={editingRoster} asOf={month} onClose={() => setEditingRoster(null)}
+        onSave={f => { setData({ ...data, roster: (data.roster || []).map(r => r.id === editingRoster.id ? memberUpsert({ ...r, name:f.name, role:f.role, serviceLine:f.serviceLine }, f.from, { salary:f.salary, active:f.active }) : r) }); setEditingRoster(null); }} />}
     </div>
   );
 }
@@ -1441,50 +1481,60 @@ function ExpenseForm({ month, initial, onClose, onSave }) {
 function Roster({ data, setData }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
-  const add = x => setData({ ...data, roster: [{ id: uid(), active:true, ...x }, ...data.roster] });
-  const update = (id, x) => setData({ ...data, roster: data.roster.map(r => r.id === id ? { ...r, ...x } : r) });
+  const addMember = f => setData({ ...data, roster: [{ id: uid(), name:f.name, role:f.role, serviceLine:f.serviceLine, since:f.from, active:true, salary:f.salary, segments:[{ from:f.from, salary:f.salary, active:true }] }, ...data.roster] });
+  const editMember = (id, f) => setData({ ...data, roster: data.roster.map(r => r.id === id ? memberUpsert({ ...r, name:f.name, role:f.role, serviceLine:f.serviceLine }, f.from, { salary:f.salary, active:f.active }) : r) });
   const remove = id => setData({ ...data, roster: data.roster.filter(r => r.id !== id) });
-  const committed = data.roster.filter(r => r.active !== false).reduce((s, r) => s + +r.salary, 0);
+  const toggle = r => setData({ ...data, roster: data.roster.map(rr => rr.id === r.id ? memberUpsert(rr, thisMonth(), { active: !memberNow(rr).active }) : rr) });
+  const activeNow = data.roster.filter(r => memberNow(r).active);
+  const committed = activeNow.reduce((s, r) => s + memberNow(r).salary, 0);
 
   return (
     <div className="view">
-      <Head eyebrow="Team" title="Payroll Roster" sub="Your standing team. Each active person's salary is posted to Expenses automatically every month from their start month — on hold until you approve it. Edit here and Expenses update on their own.">
+      <Head eyebrow="Team" title="Payroll Roster" sub="Your standing team. Each active salary posts to Expenses automatically every month. A raise or removal applies from the month you set it — earlier months stay as they were.">
         <Btn onClick={() => setAdding(true)}>+ Add person</Btn>
       </Head>
       <Grid min={200} style={{ marginBottom:20 }}>
-        <Stat label="Committed monthly salary" value={committed} color={C.amber} accent={C.amber} sub={`${data.roster.filter(r => r.active !== false).length} ${tr("active staff")}`} />
+        <Stat label="Committed monthly salary" value={committed} color={C.amber} accent={C.amber} sub={`${activeNow.length} ${tr("active staff")}`} />
       </Grid>
       <Card style={{ padding:0 }}>
         {data.roster.length === 0 ? <Empty text="No team members yet." /> : (
           <Table head={<><Th>Name</Th><Th>Role</Th><Th>Department</Th><Th right>Monthly salary</Th><Th>Starts</Th><Th>Status</Th><Th right>Actions</Th></>}>
-            {data.roster.map(r => (
+            {data.roster.map(r => { const now = memberNow(r); return (
               <tr key={r.id} className="row-hover" style={{ borderBottom:`1px solid ${C.ink10}` }}>
                 <Td bold>{r.name}</Td>
                 <Td color={C.ink60}>{r.role || "—"}</Td>
                 <Td>{r.serviceLine ? DeptTag(r.serviceLine) : <span style={{ color:C.ink30 }}>—</span>}</Td>
-                <Td right bold>{money(r.salary)}</Td>
+                <Td right bold>{now.active ? money(now.salary) : "—"}</Td>
                 <Td color={C.ink60}>{r.since ? monthLabel(r.since) : "—"}</Td>
-                <Td>{r.active !== false ? <Pill bg={C.green100} fg={C.green}>{tr("Active")}</Pill> : <Pill bg={C.ink10} fg={C.ink60}>{tr("Inactive")}</Pill>}</Td>
+                <Td>{now.active ? <Pill bg={C.green100} fg={C.green}>{tr("Active")}</Pill> : <Pill bg={C.ink10} fg={C.ink60}>{tr("Inactive")}</Pill>}</Td>
                 <Td right>
-                  <button onClick={() => update(r.id, { active: r.active === false })} title="Toggle active" style={iconBtn(C.ink60)}>⇄</button>
-                  <button onClick={() => setEditing(r)} title="Edit" style={iconBtn(C.ink60)}>✎</button>
-                  <button onClick={() => remove(r.id)} title="Delete" style={iconBtn(C.red)}>🗑</button>
+                  <button onClick={() => toggle(r)} title={tr("Toggle active (from this month)")} style={iconBtn(C.ink60)}>⇄</button>
+                  <button onClick={() => setEditing(r)} title={tr("Edit")} style={iconBtn(C.ink60)}>✎</button>
+                  <button onClick={() => remove(r.id)} title={tr("Delete")} style={iconBtn(C.red)}>🗑</button>
                 </Td>
               </tr>
-            ))}
+            ); })}
           </Table>
         )}
       </Card>
       {(adding || editing) && <RosterForm initial={editing} onClose={() => { setAdding(false); setEditing(null); }}
-        onSave={x => { editing ? update(editing.id, x) : add(x); setAdding(false); setEditing(null); }} />}
+        onSave={f => { editing ? editMember(editing.id, f) : addMember(f); setAdding(false); setEditing(null); }} />}
     </div>
   );
 }
 
-function RosterForm({ initial, onClose, onSave }) {
-  const [f, setF] = useState(initial || { name:"", role:"", serviceLine:"", salary:"", active:true, since: thisMonth() });
+// asOf = the month a change takes effect from (the Expenses page passes its viewed month)
+function RosterForm({ initial, asOf, onClose, onSave }) {
+  const eff = asOf || thisMonth();
+  const cur = initial ? memberAt(initial, eff) : { salary: 0, active: true };
+  const [f, setF] = useState(initial
+    ? { name:initial.name || "", role:initial.role || "", serviceLine:initial.serviceLine || "", salary: cur.salary || "", active: cur.active, from: eff }
+    : { name:"", role:"", serviceLine:"", salary:"", active:true, from: eff });
   const on = k => e => setF({ ...f, [k]: e.target.value });
-  const save = () => { if (!f.name || !f.salary) return alert(tr("Name and salary required.")); onSave({ ...f, salary:+f.salary, since: f.since || thisMonth() }); };
+  const save = () => {
+    if (!f.name || (f.active && !(+f.salary > 0))) return alert(tr("Name and salary required."));
+    onSave({ name:f.name, role:f.role, serviceLine:f.serviceLine, salary:+f.salary || 0, active: f.active, from: f.from || thisMonth() });
+  };
   return (
     <Modal title={initial ? "Edit person" : "Add person"} onClose={onClose}>
       <Field label="Name"><Input value={f.name} onChange={on("name")} /></Field>
@@ -1495,8 +1545,9 @@ function RosterForm({ initial, onClose, onSave }) {
       </Select></Field>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
         <Field label="Monthly salary (EGP)"><Input type="number" value={f.salary} onChange={on("salary")} /></Field>
-        <Field label="Salary starts (month)" hint="Counts as a monthly expense from here on."><Input type="month" value={f.since || thisMonth()} onChange={on("since")} /></Field>
+        <Field label={initial ? "Effective from (month)" : "Salary starts (month)"} hint={initial ? "Applies from this month on — earlier months stay unchanged." : "Counts as a monthly expense from here on."}><Input type="month" value={f.from || thisMonth()} onChange={on("from")} /></Field>
       </div>
+      {initial && <Field label="Status"><Choice options={[["true","Active"],["false","Removed / on leave"]]} value={String(f.active)} onChange={v => setF({ ...f, active: v === "true" })} /></Field>}
       <div style={{ display:"flex", gap:10, marginTop:4 }}><Btn onClick={save}>Save</Btn><Btn variant="ghost" onClick={onClose}>Cancel</Btn></div>
     </Modal>
   );
