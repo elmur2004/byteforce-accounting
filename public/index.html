@@ -458,10 +458,12 @@ const isPaid = e => !!e.paid;
 
 // ----- payroll auto-generated from the roster -----
 // Each active team member's monthly salary becomes a payroll expense for every
-// month from their start month onward, kept in sync with the roster. A month
-// where payroll was logged MANUALLY uses that manual entry instead, so nothing
-// is double-counted. Auto rows are "on hold" until approved (tracked per
-// person+month in data.payrollPaid).
+// month from their start month onward, kept in sync with the roster. Auto rows
+// are "on hold" until approved (tracked per person+month in data.payrollPaid).
+// A manual payroll expense LINKED to a person (rosterId) replaces that person's
+// automatic salary for that month; an UNLINKED manual payroll row is simply an
+// extra entry (bonus, one-off, non-roster payment) and never cancels the
+// standing roster payroll.
 // ----- effective-dated roster (salary/active history) -----
 // A member carries `segments`: [{ from:"YYYY-MM", salary, active }] sorted by
 // month. A change made "as of" a month only affects that month onward — earlier
@@ -484,8 +486,11 @@ const memberUpsert = (r, m, patch) => {
 };
 
 const autoPayroll = (data, m) => {
-  if ((data.expenses || []).some(e => e.type === "payroll" && e.month === m)) return [];
+  const covered = new Set((data.expenses || [])
+    .filter(e => e.type === "payroll" && e.month === m && e.rosterId)
+    .map(e => e.rosterId));
   return (data.roster || []).map(r => {
+    if (covered.has(r.id)) return null; // a manual entry for this person replaces their auto row
     const { salary, active } = memberAt(r, m);
     if (!active || !(salary > 0)) return null;
     const key = `${m}:${r.id}`;
@@ -631,6 +636,8 @@ const AR = {
   "Effective from (month)": "يسري من (الشهر)",
   "Applies from this month on — earlier months stay unchanged.": "يسري من هذا الشهر فصاعدًا — الأشهر السابقة تبقى كما هي.",
   "Removed / on leave": "مُزال / في إجازة",
+  "Person (optional)": "الموظف (اختياري)",
+  "— Extra payroll (adds on top) —": "— راتب إضافي (يُضاف فوق) —",
   "Payroll": "الرواتب",
   "Other expenses": "مصروفات أخرى",
   "No payroll this month.": "لا رواتب هذا الشهر.",
@@ -1440,7 +1447,7 @@ function Expenses({ data, setData, month }) {
       </Grid>
       {section("Payroll", payrollRows, "No payroll this month.")}
       {section("Other expenses", otherRows, "No other expenses this month.")}
-      {(adding || editing) && <ExpenseForm month={month} initial={editing} onClose={() => { setAdding(false); setEditing(null); }}
+      {(adding || editing) && <ExpenseForm month={month} initial={editing} roster={data.roster} onClose={() => { setAdding(false); setEditing(null); }}
         onSave={x => { editing ? update(editing.id, x) : add(x); setAdding(false); setEditing(null); }} />}
       {editingRoster && <RosterForm initial={editingRoster} asOf={month} onClose={() => setEditingRoster(null)}
         onSave={f => { setData({ ...data, roster: (data.roster || []).map(r => r.id === editingRoster.id ? memberUpsert({ ...r, name:f.name, role:f.role, serviceLine:f.serviceLine }, f.from, { salary:f.salary, active:f.active }) : r) }); setEditingRoster(null); }} />}
@@ -1448,7 +1455,7 @@ function Expenses({ data, setData, month }) {
   );
 }
 
-function ExpenseForm({ month, initial, onClose, onSave }) {
+function ExpenseForm({ month, initial, roster, onClose, onSave }) {
   const [f, setF] = useState(initial || { month, type:"subscription", name:"", serviceLine:"", amount:"", note:"", paid:false, paidDate:null });
   const on = k => e => setF({ ...f, [k]: e.target.value });
   const save = () => { if (!f.amount) return alert(tr("Amount required.")); onSave({ ...f, amount:+f.amount, paidDate: f.paid ? (f.paidDate || today()) : null }); };
@@ -1463,6 +1470,14 @@ function ExpenseForm({ month, initial, onClose, onSave }) {
           </Select>
         </Field>
       </div>
+      {f.type === "payroll" && (
+        <Field label="Person (optional)" hint="Leave blank to ADD an extra payroll entry (bonus, one-off) — the standard roster payroll stays. Pick a person only if this should REPLACE their automatic salary for this month.">
+          <Select value={f.rosterId || ""} onChange={e => { const id = e.target.value; const p = (roster || []).find(x => x.id === id); setF({ ...f, rosterId: id || undefined, name: id && p ? p.name : f.name }); }}>
+            <option value="">{tr("— Extra payroll (adds on top) —")}</option>
+            {(roster || []).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </Select>
+        </Field>
+      )}
       <Field label="Name / payee"><Input value={f.name} onChange={on("name")} placeholder="e.g. Adobe, office rent" /></Field>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
         <Field label="Amount (EGP)"><Input type="number" value={f.amount} onChange={on("amount")} /></Field>
