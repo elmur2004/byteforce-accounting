@@ -381,6 +381,11 @@ function useStore() {
   const [saveError, setSaveError] = useState(false);
   const latest = useRef(null);    // newest payload waiting to be written (coalesced)
   const inFlight = useRef(false);  // is a write in progress?
+  const dataRef = useRef(EMPTY);   // always the current data (for capturing pre-change snapshots)
+  const history = useRef([]);      // snapshots BEFORE each change — the undo stack
+  const redoStack = useRef([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   // ONE write at a time, and always the LATEST state. Rapid edits coalesce into
   // the fewest writes, and no out-of-order POST can ever overwrite newer data.
@@ -428,8 +433,15 @@ function useStore() {
     } finally { setLoaded(true); }
   }, [flush]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { dataRef.current = data; }); // keep the ref pointing at the live state
 
-  const save = useCallback(next => {
+  const save = useCallback((next, opts) => {
+    if (!opts || !opts.noHistory) {              // record an undo point (skip for undo/redo itself)
+      history.current.push(dataRef.current);
+      if (history.current.length > 60) history.current.shift();
+      redoStack.current = [];                    // a fresh edit invalidates redo
+      setCanUndo(true); setCanRedo(false);
+    }
     const stamped = { ...next, _savedAt: Date.now() }; // wall-clock freshness marker
     setData(stamped);              // optimistic UI
     writeBackup(stamped);          // durable local safety copy FIRST (never lose it)
@@ -438,7 +450,22 @@ function useStore() {
   }, [flush]);
   const retrySave = useCallback(() => { flush(); }, [flush]);
 
-  return { data, setData: save, loaded, loadError, reload: load, saving, saveError, retrySave };
+  const undo = useCallback(() => {
+    if (!history.current.length) return;
+    redoStack.current.push(dataRef.current);
+    const prev = history.current.pop();
+    setCanUndo(history.current.length > 0); setCanRedo(true);
+    save(prev, { noHistory: true });
+  }, [save]);
+  const redo = useCallback(() => {
+    if (!redoStack.current.length) return;
+    history.current.push(dataRef.current);
+    const nx = redoStack.current.pop();
+    setCanUndo(true); setCanRedo(redoStack.current.length > 0);
+    save(nx, { noHistory: true });
+  }, [save]);
+
+  return { data, setData: save, loaded, loadError, reload: load, saving, saveError, retrySave, undo, redo, canUndo, canRedo };
 }
 
 /* ============================================================
@@ -632,6 +659,8 @@ const AR = {
   "from roster": "من كشف الرواتب",
   "Edit in roster": "تعديل في كشف الرواتب",
   "Total": "الإجمالي",
+  "Undo": "تراجع",
+  "Redo": "إعادة",
   "Toggle active (from this month)": "تفعيل/إيقاف (من هذا الشهر)",
   "Effective from (month)": "يسري من (الشهر)",
   "Applies from this month on — earlier months stay unchanged.": "يسري من هذا الشهر فصاعدًا — الأشهر السابقة تبقى كما هي.",
@@ -2228,7 +2257,7 @@ function LangToggle({ lang, setLang }) {
 }
 
 function App() {
-  const { data, setData, loaded, loadError, reload, saving, saveError, retrySave } = useStore();
+  const { data, setData, loaded, loadError, reload, saving, saveError, retrySave, undo, redo, canUndo, canRedo } = useStore();
   const [tab, setTab] = useState("dashboard");
   const [month, setMonth] = useState(thisMonth());
   const [navOpen, setNavOpen] = useState(false);
@@ -2239,6 +2268,20 @@ function App() {
   const setLang = l => { CURRENT_LANG = l; try { localStorage.setItem("bf-lang", l); } catch {} setLangState(l); };
   useEffect(() => { document.documentElement.lang = lang; document.documentElement.dir = lang === "ar" ? "rtl" : "ltr"; }, [lang]);
   useEffect(() => { setNavOpen(false); }, [tab]);
+  // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo — but let form fields keep native text-undo.
+  useEffect(() => {
+    const onKey = e => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = (e.key || "").toLowerCase();
+      if (k !== "z" && k !== "y") return;
+      const el = e.target;
+      if (el && el.matches && el.matches("input, textarea, select, [contenteditable='true']")) return;
+      e.preventDefault();
+      if (k === "y" || (k === "z" && e.shiftKey)) redo(); else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
   const t = useCallback(s => (lang === "ar" ? (AR[s] || s) : s), [lang]);
 
   if (!loaded) return <div style={{ fontFamily:FONT, padding:40, color:C.ink60 }}>{t("Loading…")}</div>;
@@ -2281,6 +2324,10 @@ function App() {
               <div className="disp" style={{ fontSize:15, letterSpacing:".02em" }}>{t(NAV.find(n => n.id === tab)?.label || "Dashboard")}</div>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:2, background:C.white, border:`1px solid ${C.ink10}`, borderRadius:4, padding:2 }}>
+                <button onClick={undo} disabled={!canUndo} title={`${t("Undo")} (Ctrl+Z)`} style={{ ...iconBtn(canUndo ? C.ink : C.ink30), fontSize:17, cursor: canUndo ? "pointer" : "default", opacity: canUndo ? 1 : .45 }}>↶</button>
+                <button onClick={redo} disabled={!canRedo} title={`${t("Redo")} (Ctrl+Shift+Z)`} style={{ ...iconBtn(canRedo ? C.ink : C.ink30), fontSize:17, cursor: canRedo ? "pointer" : "default", opacity: canRedo ? 1 : .45 }}>↷</button>
+              </div>
               <span title={t("Your data is saved in the cloud")} style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12, fontWeight:600, color:saveStatus.color }}>
                 <span style={{ width:8, height:8, borderRadius:999, background:saveStatus.color, display:"inline-block" }} />{saveStatus.text}
               </span>
